@@ -1,14 +1,15 @@
 heat_template_version: 2013-05-23
 
 description: |
-  Creates a DevStack server.
+  Creates a DevStack server. The waitcondition ensures that the stack will
+  complete only after devstack has actually been deployed on the server.
 
 parameters:
 
   flavor:
     description: Rackspace Cloud Server flavor
-    type: string 
-    default: 4GB Standard Instance
+    type: string
+    default: 15GB Standard Instance
     constraints:
     - allowed_values:
       - 4GB Standard Instance
@@ -20,7 +21,7 @@ parameters:
   image:
     type: string
     description: Server image id to use
-    default: 5b0d5891-f80c-412a-9b73-cc996de9d719
+    default: Ubuntu 14.04 LTS (Trusty Tahr) (PVHVM)
     constraints:
     - allowed_values:
       - 4b14a92e-84c8-4770-9245-91ecb8501cc2  # CentOS 6.5
@@ -32,10 +33,6 @@ parameters:
     description: the instance name
     type: string
     default: Devstack server
-
-  key_name:
-    description: Nova keypair name for ssh access to the server
-    type: string
 
   mysql_pass:
     hidden: true
@@ -90,15 +87,40 @@ parameters:
     description: Devstack branch to clone
     type: string
 
-resources:
+  timeout:
+    default: 1800 # devstack takes a long time to complete!
+    description: time that the stack will wait for devstack installation to complete
+    type: number
 
-  devstack_server: 
+  keypair_name:
+    default: private_access_key
+    description: name to assign to the keypair created during stack deployment.
+    type: string
+
+resources:
+  signal_handle:
+    type: "OS::Heat::SwiftSignalHandle"
+
+  wait_on_server:
+    type: OS::Heat::SwiftSignal
+    properties:
+      handle: {get_resource: signal_handle}
+      count: 1
+      timeout: { get_param: timeout }
+
+  key_name:
+    type: OS::Nova::KeyPair
+    properties:
+      name: { get_param: keypair_name }
+      save_private_key: true
+
+  devstack_server:
     type: OS::Nova::Server
     properties:
       flavor: { get_param: flavor }
       image: { get_param: image }
       name: { get_param: server_name }
-      key_name: { get_param: key_name }
+      key_name: { get_resource: key_name }
       user_data_format: RAW
       config_drive: "true"
       user_data:
@@ -185,17 +207,18 @@ resources:
             # Install devstack (takes ~15-20 minutes)
             chmod +x ~stack/install-devstack.sh
             sudo -u stack ~stack/install-devstack.sh
-
+            %wc_notify% --data-binary '{"status": "SUCCESS"}'
           params:
             "%mysql_pass%": { get_param: mysql_pass }
             "%admin_pass%": { get_param: admin_pass }
             "%rabbit_pass%": { get_param: rabbit_pass }
             "%service_pass%": { get_param: service_pass }
-            "%key_name%": { get_param: key_name }
+            "%key_name%": { get_resource: key_name }
             "%devstack_branch%": { get_param: devstack_branch }
+            "%wc_notify%": { get_attr: ['signal_handle', 'curl_cli'] }
 
 outputs:
-  
+
   horizon_url:
     value:
       str_replace:
@@ -203,3 +226,7 @@ outputs:
         params:
           "%server-ip%": { get_attr: [ devstack_server, accessIPv4 ] }
     description: The Horizon web control panel URL of your devstack server
+
+  private_key:
+    value:
+      get_attr: [key_name, private_key]
